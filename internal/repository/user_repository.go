@@ -149,3 +149,104 @@ func (r *UserRepository) List(ctx context.Context, page, limit int64) ([]*models
 
 	return users, total, nil
 }
+
+// ListWithFilter returns a list of users with filtering and pagination
+func (r *UserRepository) ListWithFilter(ctx context.Context, filter map[string]interface{}, page, limit int64) ([]*models.User, int64, error) {
+	skip := (page - 1) * limit
+
+	// Get total count with filter
+	total, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Find users with pagination and filter
+	opts := options.Find().
+		SetSkip(skip).
+		SetLimit(limit).
+		SetSort(bson.M{"created_at": -1})
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cursor.Close(ctx)
+
+	var users []*models.User
+	if err = cursor.All(ctx, &users); err != nil {
+		return nil, 0, err
+	}
+
+	return users, total, nil
+}
+
+// GetUserStats returns user statistics
+func (r *UserRepository) GetUserStats(ctx context.Context) (map[string]interface{}, error) {
+	stats := make(map[string]interface{})
+
+	// Total users
+	totalUsers, err := r.collection.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	stats["total_users"] = totalUsers
+
+	// Verified users
+	verifiedUsers, err := r.collection.CountDocuments(ctx, bson.M{"is_verified": true})
+	if err != nil {
+		return nil, err
+	}
+	stats["verified_users"] = verifiedUsers
+
+	// Blocked users
+	blockedUsers, err := r.collection.CountDocuments(ctx, bson.M{"blocked": true})
+	if err != nil {
+		return nil, err
+	}
+	stats["blocked_users"] = blockedUsers
+
+	// Users by role
+	pipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id": "$role",
+				"count": bson.M{
+					"$sum": 1,
+				},
+			},
+		},
+	}
+
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var roleStats []bson.M
+	if err = cursor.All(ctx, &roleStats); err != nil {
+		return nil, err
+	}
+
+	roleCounts := make(map[string]int64)
+	for _, stat := range roleStats {
+		role := stat["_id"].(string)
+		count := stat["count"].(int64)
+		roleCounts[role] = count
+	}
+	stats["users_by_role"] = roleCounts
+
+	// New users in last 30 days
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
+	newUsers, err := r.collection.CountDocuments(ctx, bson.M{
+		"created_at": bson.M{
+			"$gte": thirtyDaysAgo,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	stats["new_users_last_30_days"] = newUsers
+
+	return stats, nil
+}

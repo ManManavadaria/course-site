@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"cource-api/internal/config"
 	"cource-api/internal/middleware"
 	"cource-api/internal/models"
 	"cource-api/internal/repository"
@@ -218,17 +219,140 @@ func GetUserIDFromContext(c *fiber.Ctx) (string, error) {
 
 // generateToken generates a JWT token for the user
 func generateToken(user *models.User) (string, error) {
-	// Create the Claims
-	claims := jwt.MapClaims{
-		"id":    user.ID.Hex(),
-		"email": user.Email,
-		"role":  user.Role,
-		"exp":   time.Now().Add(time.Hour * 24).Unix(),
+	claims := &middleware.Claims{
+		UserID: user.ID,
+		Email:  user.Email,
+		Role:   user.Role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(config.AppConfig.JWTExpiration)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
 	}
 
 	// Create token
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
 	// Generate encoded token
-	return token.SignedString([]byte("your-secret-key")) // TODO: Use config
+	return token.SignedString([]byte(config.AppConfig.JWTSecret))
+}
+
+// HandleRequestPasswordReset handles password reset request
+func HandleRequestPasswordReset(userRepo *repository.UserRepository, otpRepo *repository.OTPRepository) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var req struct {
+			Email string `json:"email"`
+		}
+
+		if err := c.BodyParser(&req); err != nil {
+			logrus.WithError(err).Error("Failed to parse password reset request body")
+			return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+		}
+
+		// Validate email
+		if err := validateEmail(req.Email); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+
+		// Check if user exists
+		user, err := userRepo.GetByEmail(c.Context(), req.Email)
+		if err != nil {
+			logrus.WithError(err).WithField("email", req.Email).Error("Failed to get user during password reset request")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to process password reset request")
+		}
+
+		// If user exists, generate and save OTP
+		if user != nil {
+			otp, err := GenerateAndSaveOTP(c.Context(), otpRepo, req.Email, "reset")
+			if err != nil {
+				logrus.WithError(err).WithField("email", req.Email).Error("Failed to generate OTP for password reset")
+				return fiber.NewError(fiber.StatusInternalServerError, "Failed to process password reset request")
+			}
+
+			logrus.WithFields(logrus.Fields{
+				"email": req.Email,
+				"otp":   otp.Code,
+			}).Info("Generated password reset OTP")
+		}
+
+		// Always return success to prevent email enumeration
+		return c.JSON(fiber.Map{
+			"message": "If your email is registered, you will receive a password reset code",
+		})
+	}
+}
+
+// HandleResetPassword handles password reset with OTP verification
+func HandleResetPassword(userRepo *repository.UserRepository, otpRepo *repository.OTPRepository) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var req struct {
+			Email       string `json:"email"`
+			OTP         string `json:"otp"`
+			NewPassword string `json:"new_password"`
+		}
+
+		if err := c.BodyParser(&req); err != nil {
+			logrus.WithError(err).Error("Failed to parse password reset body")
+			return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+		}
+
+		// Validate email
+		if err := validateEmail(req.Email); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+
+		// Validate new password
+		if err := validatePassword(req.NewPassword); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+
+		// Get latest OTP
+		otp, err := otpRepo.GetLatestOTP(c.Context(), req.Email, "reset")
+		if err != nil {
+			logrus.WithError(err).Error("Failed to get OTP")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to verify reset code")
+		}
+
+		if otp == nil {
+			return fiber.NewError(fiber.StatusBadRequest, "No valid reset code found")
+		}
+
+		// Verify OTP
+		if otp.Code != req.OTP {
+			return fiber.NewError(fiber.StatusBadRequest, "Invalid reset code")
+		}
+
+		// Mark OTP as used
+		if err := otpRepo.MarkAsUsed(c.Context(), otp.ID); err != nil {
+			logrus.WithError(err).Error("Failed to mark OTP as used")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to verify reset code")
+		}
+
+		// Get user
+		user, err := userRepo.GetByEmail(c.Context(), req.Email)
+		if err != nil {
+			logrus.WithError(err).WithField("email", req.Email).Error("Failed to get user during password reset")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to reset password")
+		}
+		if user == nil {
+			return fiber.NewError(fiber.StatusNotFound, "User not found")
+		}
+
+		// Hash new password
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			logrus.WithError(err).Error("Failed to hash new password")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to reset password")
+		}
+
+		// Update user's password
+		user.PasswordHash = string(hashedPassword)
+		if err := userRepo.Update(c.Context(), user); err != nil {
+			logrus.WithError(err).WithField("email", req.Email).Error("Failed to update user password")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to reset password")
+		}
+
+		return c.JSON(fiber.Map{
+			"message": "Password has been reset successfully",
+		})
+	}
 }

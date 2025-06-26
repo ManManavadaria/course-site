@@ -3,8 +3,8 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
+	"math/big"
 	"time"
 
 	"cource-api/internal/models"
@@ -21,12 +21,11 @@ var (
 // GenerateAndSaveOTP generates a new OTP and saves it to the database
 func GenerateAndSaveOTP(ctx context.Context, otpRepo *repository.OTPRepository, email string, otpType string) (*models.OTP, error) {
 	// Generate OTP
-	otpBytes := make([]byte, 3)
-	if _, err := rand.Read(otpBytes); err != nil {
+	otpCode, err := generateOTP(6)
+	if err != nil {
 		logrus.WithError(err).Error("Failed to generate OTP")
 		return nil, err
 	}
-	otpCode := hex.EncodeToString(otpBytes)[:6]
 
 	// Create OTP record
 	otp := &models.OTP{
@@ -50,4 +49,17 @@ func GenerateAndSaveOTP(ctx context.Context, otpRepo *repository.OTPRepository, 
 	}).Info("OTP generated and saved")
 
 	return otp, nil
+}
+
+func generateOTP(length int) (string, error) {
+	const digits = "0123456789"
+	otp := make([]byte, length)
+	for i := 0; i < length; i++ {
+		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(digits))))
+		if err != nil {
+			return "", err
+		}
+		otp[i] = digits[num.Int64()]
+	}
+	return string(otp), nil
 }

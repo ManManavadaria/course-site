@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"cource-api/internal/aws"
 	"cource-api/internal/models"
 	"cource-api/internal/repository"
 	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/sirupsen/logrus"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -46,28 +48,68 @@ func HandleListVideos(repo *repository.VideoRepository) fiber.Handler {
 }
 
 // HandleCreateVideo creates a new video
-func HandleCreateVideo(repo *repository.VideoRepository) fiber.Handler {
+func HandleCreateVideo(repo *repository.VideoRepository, courseRepo *repository.CourseRepository) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Parse request body
-		var video models.Video
-		if err := c.BodyParser(&video); err != nil {
+		var req struct {
+			Title        string             `json:"title"`
+			Description  string             `json:"description"`
+			VideoURL     string             `json:"video_url"`     // Direct S3 URL for video
+			ThumbnailURL string             `json:"thumbnail_url"` // Direct S3 URL for thumbnail
+			Duration     int                `json:"duration"`
+			IsPaid       bool               `json:"is_paid"`
+			CourseID     primitive.ObjectID `json:"course_id"`
+		}
+
+		if err := c.BodyParser(&req); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
 		}
 
 		// Validate required fields
-		if video.Title == "" {
+		if req.Title == "" {
 			return fiber.NewError(fiber.StatusBadRequest, "Title is required")
 		}
-		if video.CourseID.IsZero() {
+		if req.VideoURL == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "Video URL is required")
+		}
+		if req.ThumbnailURL == "" {
+			return fiber.NewError(fiber.StatusBadRequest, "Thumbnail URL is required")
+		}
+		if req.CourseID.IsZero() {
 			return fiber.NewError(fiber.StatusBadRequest, "Course ID is required")
 		}
 
-		// Set creation time
-		video.CreatedAt = time.Now()
+		// Check if course exists
+		course, err := courseRepo.GetByID(c.Context(), req.CourseID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to verify course")
+		}
+		if course == nil {
+			return fiber.NewError(fiber.StatusNotFound, "Course not found")
+		}
+
+		// Create video object
+		video := &models.Video{
+			Title:       req.Title,
+			Description: req.Description,
+			URL:         req.VideoURL,
+			Thumbnail:   req.ThumbnailURL,
+			Duration:    req.Duration,
+			IsPaid:      req.IsPaid,
+			CourseID:    req.CourseID,
+			CreatedAt:   time.Now(),
+		}
 
 		// Create video
-		if err := repo.Create(c.Context(), &video); err != nil {
+		if err := repo.Create(c.Context(), video); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to create video")
+		}
+
+		// Add video to course's video order
+		if err := courseRepo.AddVideoToCourse(c.Context(), video.CourseID, video.ID, len(course.VideoOrder)); err != nil {
+			// If adding to course fails, delete the video
+			_ = repo.Delete(c.Context(), video.ID)
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to add video to course")
 		}
 
 		return c.Status(fiber.StatusCreated).JSON(video)
@@ -98,12 +140,20 @@ func HandleGetVideo(repo *repository.VideoRepository) fiber.Handler {
 			return fiber.NewError(fiber.StatusNotFound, "Video not found")
 		}
 
+		presignedURL, err := aws.S3C.GenerateWatchURL(video.URL, 12)
+		if err != nil {
+			logrus.WithError(err).Error("Failed to generate pre-signed URL")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to generate upload URL")
+		}
+
+		video.URL = presignedURL
+
 		return c.JSON(video)
 	}
 }
 
 // HandleUpdateVideo updates a video
-func HandleUpdateVideo(repo *repository.VideoRepository) fiber.Handler {
+func HandleUpdateVideo(repo *repository.VideoRepository, courseRepo *repository.CourseRepository) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get video ID from params
 		videoID := c.Params("id")
@@ -128,16 +178,41 @@ func HandleUpdateVideo(repo *repository.VideoRepository) fiber.Handler {
 
 		// Parse update data
 		var updateData struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			URL         string `json:"url"`
-			Thumbnail   string `json:"thumbnail"`
-			Duration    int    `json:"duration"`
-			IsPaid      bool   `json:"is_paid"`
+			Title        string             `json:"title"`
+			Description  string             `json:"description"`
+			VideoURL     string             `json:"video_url"`     // Direct S3 URL for video
+			ThumbnailURL string             `json:"thumbnail_url"` // Direct S3 URL for thumbnail
+			Duration     int                `json:"duration"`
+			IsPaid       bool               `json:"is_paid"`
+			CourseID     primitive.ObjectID `json:"course_id"`
 		}
 
 		if err := c.BodyParser(&updateData); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
+		}
+
+		// Handle course change if needed
+		if video.CourseID != updateData.CourseID {
+			course, err := courseRepo.GetByID(c.Context(), updateData.CourseID)
+			if err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, "Failed to verify course")
+			}
+			if course == nil {
+				return fiber.NewError(fiber.StatusNotFound, "Course not found")
+			}
+
+			//NOTE: Solve the issue of remove and add video to new course
+			if err := courseRepo.RemoveVideoFromCourse(c.Context(), video.CourseID, video.ID); err != nil {
+				logrus.Error(err)
+				return fiber.NewError(fiber.StatusInternalServerError, "Failed to remove video from old course")
+			}
+
+			// Add video to new course
+			if err := courseRepo.AddVideoToCourse(c.Context(), updateData.CourseID, video.ID, len(course.VideoOrder)); err != nil {
+				return fiber.NewError(fiber.StatusInternalServerError, "Failed to add video to new course")
+			}
+
+			video.CourseID = updateData.CourseID
 		}
 
 		// Update video fields
@@ -147,11 +222,11 @@ func HandleUpdateVideo(repo *repository.VideoRepository) fiber.Handler {
 		if updateData.Description != "" {
 			video.Description = updateData.Description
 		}
-		if updateData.URL != "" {
-			video.URL = updateData.URL
+		if updateData.VideoURL != "" {
+			video.URL = updateData.VideoURL
 		}
-		if updateData.Thumbnail != "" {
-			video.Thumbnail = updateData.Thumbnail
+		if updateData.ThumbnailURL != "" {
+			video.Thumbnail = updateData.ThumbnailURL
 		}
 		if updateData.Duration > 0 {
 			video.Duration = updateData.Duration
@@ -168,7 +243,7 @@ func HandleUpdateVideo(repo *repository.VideoRepository) fiber.Handler {
 }
 
 // HandleDeleteVideo deletes a video
-func HandleDeleteVideo(repo *repository.VideoRepository) fiber.Handler {
+func HandleDeleteVideo(repo *repository.VideoRepository, courseRepo *repository.CourseRepository) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get video ID from params
 		videoID := c.Params("id")
@@ -182,9 +257,36 @@ func HandleDeleteVideo(repo *repository.VideoRepository) fiber.Handler {
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid video ID format")
 		}
 
-		// Delete video
+		// Get existing video
+		video, err := repo.GetByID(c.Context(), objectID)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to get video")
+		}
+		if video == nil {
+			return fiber.NewError(fiber.StatusNotFound, "Video not found")
+		}
+
+		// Delete video file from S3
+		if err := aws.S3C.DeleteFile(video.URL); err != nil {
+			logrus.WithError(err).WithField("video_id", videoID).Error("Failed to delete video file from S3")
+			// Continue with deletion even if S3 deletion fails
+		}
+
+		// Delete thumbnail from S3
+		if err := aws.S3C.DeleteThumbnail(video.Thumbnail); err != nil {
+			logrus.WithError(err).WithField("video_id", videoID).Error("Failed to delete thumbnail from S3")
+			// Continue with deletion even if S3 deletion fails
+		}
+
+		// Delete video from database
 		if err := repo.Delete(c.Context(), objectID); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to delete video")
+		}
+
+		// Remove video from course's video order
+		if err := courseRepo.RemoveVideoFromCourse(c.Context(), video.CourseID, video.ID); err != nil {
+			logrus.WithError(err).WithField("video_id", videoID).Error("Failed to remove video from course")
+			// Continue even if removing from course fails
 		}
 
 		return c.SendStatus(fiber.StatusNoContent)

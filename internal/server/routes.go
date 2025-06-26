@@ -34,13 +34,18 @@ func (s *FiberServer) RegisterRoutes() {
 	courses.Put("/:id", middleware.RequireRole("admin"), handlers.HandleUpdateCourse(s.CourseRepo))
 	courses.Delete("/:id", middleware.RequireRole("admin"), handlers.HandleDeleteCourse(s.CourseRepo))
 
+	//aws s3 routes
+	awsRoutes := protected.Group("/s3")
+	awsRoutes.Post("/generate-video-url", handlers.HandleVideoGeneratePresignedURL())
+	awsRoutes.Post("/generate-thumbnail-url", handlers.HandleThumbnailGeneratePresignedURL())
+
 	// Video routes
 	videos := protected.Group("/videos")
 	videos.Get("/", handlers.HandleListVideos(s.VideoRepo))
-	videos.Post("/", middleware.RequireRole("admin"), handlers.HandleCreateVideo(s.VideoRepo))
+	videos.Post("/", middleware.RequireRole("admin"), handlers.HandleCreateVideo(s.VideoRepo, s.CourseRepo))
 	videos.Get("/:id", handlers.HandleGetVideo(s.VideoRepo))
-	videos.Put("/:id", middleware.RequireRole("admin"), handlers.HandleUpdateVideo(s.VideoRepo))
-	videos.Delete("/:id", middleware.RequireRole("admin"), handlers.HandleDeleteVideo(s.VideoRepo))
+	videos.Put("/:id", middleware.RequireRole("admin"), handlers.HandleUpdateVideo(s.VideoRepo, s.CourseRepo))
+	videos.Delete("/:id", middleware.RequireRole("admin"), handlers.HandleDeleteVideo(s.VideoRepo, s.CourseRepo))
 	videos.Post("/:id/watch", handlers.HandleUpdateWatchHistory(s.VideoRepo))
 	videos.Get("/history", handlers.HandleGetWatchHistory(s.VideoRepo))
 
@@ -76,6 +81,7 @@ func (s *FiberServer) RegisterRoutes() {
 	// Admin routes
 	admin := protected.Group("/admin", middleware.RequireRole("admin"))
 	admin.Get("/users", handlers.HandleListUsers(s.UserRepo))
+	admin.Get("/users/stats", handlers.HandleGetUserStats(s.UserRepo))
 	admin.Put("/users/:id", handlers.HandleUpdateUser(s.UserRepo))
 	admin.Delete("/users/:id", handlers.HandleDeleteUser(s.UserRepo))
 	admin.Put("/pricing/:region", handlers.HandleUpdateRegionalPricing(s.PaymentRepo))

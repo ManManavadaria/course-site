@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cource-api/internal/aws"
 	"cource-api/internal/config"
 	"cource-api/internal/database"
 	"cource-api/internal/repository"
@@ -20,6 +21,12 @@ func main() {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
 	defer database.Disconnect()
+
+	s3c, err := aws.NewS3Client()
+	if err != nil {
+		log.Fatal("Failed to connect aws s3: ", err)
+	}
+	aws.S3C = s3c
 
 	// Initialize repositories
 	userRepo := repository.NewUserRepository()

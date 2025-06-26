@@ -17,6 +17,12 @@ type Config struct {
 	Environment   string
 	StripeKey     string
 	StripeWebhook string
+	// AWS Configuration
+	AWSRegion          string
+	AWSAccessKeyID     string
+	AWSSecretAccessKey string
+	AWSBucketName      string
+	AWSThumbnailBucket string
 }
 
 var AppConfig Config
@@ -36,6 +42,12 @@ func Load() error {
 		Environment:   getEnv("ENVIRONMENT", "development"),
 		StripeKey:     getEnv("STRIPE_SECRET_KEY", ""),
 		StripeWebhook: getEnv("STRIPE_WEBHOOK_SECRET", ""),
+		// AWS Configuration
+		AWSRegion:          getEnv("AWS_REGION", "us-east-1"),
+		AWSAccessKeyID:     getEnv("AWS_ACCESS_KEY_ID", ""),
+		AWSSecretAccessKey: getEnv("AWS_SECRET_ACCESS_KEY", ""),
+		AWSBucketName:      getEnv("AWS_BUCKET_NAME", ""),
+		AWSThumbnailBucket: getEnv("AWS_THUMBNAIL_BUCKET", ""),
 	}
 
 	return nil

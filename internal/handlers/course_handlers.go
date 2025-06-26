@@ -54,14 +54,18 @@ func HandleCreateCourse(repo *repository.CourseRepository) fiber.Handler {
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
 		}
 
+		//NOTE: handle thumbnail upload logic and add the thumbnail url to the course document
+
 		// Create course
 		course := &models.Course{
 			Title:       req.Title,
 			SubTitle:    req.SubTitle,
 			Description: req.Description,
 			IsPaid:      req.IsPaid,
+			Skills:      req.Skills,
+			Author:      req.Author,
 			CreatedBy:   user.ID,
-			VideoOrder:  []primitive.ObjectID{}, // Initialize empty video order
+			VideoOrder:  []primitive.ObjectID{},
 		}
 
 		if err := repo.Create(c.Context(), course); err != nil {
@@ -138,27 +142,33 @@ func HandleUpdateCourse(repo *repository.CourseRepository) fiber.Handler {
 
 		// Parse request body
 		var updateData struct {
-			Title        string `json:"title"`
-			Description  string `json:"description"`
-			ThumbnailURL string `json:"thumbnail_url"`
-			IsPaid       bool   `json:"is_paid"`
+			Title       string   `json:"title"`
+			SubTitle    string   `json:"subtitle"`
+			Description string   `json:"description"`
+			IsPaid      bool     `json:"is_paid"`
+			Skills      []string `json:"skills"`
+			Author      string   `json:"author"`
 		}
 
 		if err := c.BodyParser(&updateData); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
 		}
 
+		//NOTE: handle the s3 thumbnail update logic and update the url in the course document
+
 		// Update course fields
 		if updateData.Title != "" {
 			course.Title = updateData.Title
 		}
-		if updateData.Description != "" {
-			course.Description = updateData.Description
-		}
-		if updateData.ThumbnailURL != "" {
-			course.ThumbnailURL = updateData.ThumbnailURL
-		}
+		course.SubTitle = updateData.SubTitle
+		course.Description = updateData.Description
+		// if updateData.ThumbnailURL != "" {
+		// 	course.ThumbnailURL = updateData.ThumbnailURL
+		// }
 		course.IsPaid = updateData.IsPaid
+		course.Skills = nil
+		course.Skills = updateData.Skills
+		course.Author = updateData.Author
 
 		// Update course
 		if err := repo.Update(c.Context(), course); err != nil {
@@ -184,12 +194,14 @@ func HandleDeleteCourse(repo *repository.CourseRepository) fiber.Handler {
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid course ID format")
 		}
 
+		//NOTE: Remove the couse reference from the corresponding videos as well
+
 		// Delete course
 		if err := repo.Delete(c.Context(), objectID); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to delete course")
 		}
 
-		return c.SendStatus(fiber.StatusNoContent)
+		return c.SendStatus(fiber.StatusOK)
 	}
 }
 
@@ -227,7 +239,6 @@ func HandleReorderVideos(repo *repository.CourseRepository) fiber.Handler {
 			videoOrder[i] = videoID
 		}
 
-		// Reorder videos
 		if err := repo.ReorderVideos(c.Context(), objectID, videoOrder); err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to reorder videos")
 		}

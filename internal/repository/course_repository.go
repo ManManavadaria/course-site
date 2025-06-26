@@ -92,10 +92,13 @@ func (r *CourseRepository) Update(ctx context.Context, course *models.Course) er
 	update := bson.M{
 		"$set": bson.M{
 			"title":         course.Title,
+			"subtitle":      course.SubTitle,
 			"description":   course.Description,
 			"thumbnail_url": course.ThumbnailURL,
 			"video_order":   course.VideoOrder,
 			"is_paid":       course.IsPaid,
+			"skills":        course.Skills,
+			"author":        course.Author,
 			"updated_at":    course.UpdatedAt,
 		},
 	}
@@ -208,10 +211,18 @@ func (r *CourseRepository) RemoveVideoFromCourse(ctx context.Context, courseID p
 
 	// Create new order array without the specified video
 	currentOrder := course.VideoOrder
+	if len(currentOrder) == 0 {
+		return fmt.Errorf("Course not having any videos")
+	}
 	newOrder := make([]primitive.ObjectID, 0, len(currentOrder)-1)
-	for _, v := range currentOrder {
-		if v != videoID {
-			newOrder = append(newOrder, v)
+
+	if len(currentOrder) == 1 && currentOrder[0] == videoID {
+		newOrder = nil
+	} else {
+		for _, v := range currentOrder {
+			if v != videoID {
+				newOrder = append(newOrder, v)
+			}
 		}
 	}
 

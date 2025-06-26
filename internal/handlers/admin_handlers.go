@@ -6,20 +6,59 @@ import (
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/sirupsen/logrus"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"golang.org/x/crypto/bcrypt"
 )
 
-// HandleListUsers lists all users (admin only)
+// HandleListUsers lists all users with pagination and filtering
 func HandleListUsers(repo *repository.UserRepository) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get pagination parameters
-		page, _ := strconv.ParseInt(c.Query("page", "1"), 10, 64)
-		limit, _ := strconv.ParseInt(c.Query("limit", "10"), 10, 64)
+		page, err := strconv.ParseInt(c.Query("page", "1"), 10, 64)
+		if err != nil || page < 1 {
+			page = 1
+		}
+		limit, err := strconv.ParseInt(c.Query("limit", "10"), 10, 64)
+		if err != nil || limit < 1 || limit > 100 {
+			limit = 10
+		}
 
-		// Get users with pagination
-		users, total, err := repo.List(c.Context(), page, limit)
+		// Get filter parameters
+		role := c.Query("role")
+		isVerified := c.Query("is_verified")
+		isBlocked := c.Query("is_blocked")
+		search := c.Query("search")
+
+		// Build filter
+		filter := make(map[string]interface{})
+		if role != "" {
+			filter["role"] = role
+		}
+		if isVerified != "" {
+			verified, err := strconv.ParseBool(isVerified)
+			if err == nil {
+				filter["is_verified"] = verified
+			}
+		}
+		if isBlocked != "" {
+			blocked, err := strconv.ParseBool(isBlocked)
+			if err == nil {
+				filter["blocked"] = blocked
+			}
+		}
+		if search != "" {
+			filter["$or"] = []map[string]interface{}{
+				{"name": map[string]string{"$regex": search, "$options": "i"}},
+				{"email": map[string]string{"$regex": search, "$options": "i"}},
+			}
+		}
+
+		// Get users
+		users, total, err := repo.ListWithFilter(c.Context(), filter, page, limit)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "Failed to list users")
+			logrus.WithError(err).Error("Failed to list users")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to retrieve users")
 		}
 
 		return c.JSON(fiber.Map{
@@ -31,7 +70,7 @@ func HandleListUsers(repo *repository.UserRepository) fiber.Handler {
 	}
 }
 
-// HandleUpdateUser updates a user (admin only)
+// HandleUpdateUser updates a user's information
 func HandleUpdateUser(repo *repository.UserRepository) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get user ID from params
@@ -43,46 +82,86 @@ func HandleUpdateUser(repo *repository.UserRepository) fiber.Handler {
 		// Convert string ID to ObjectID
 		objectID, err := primitive.ObjectIDFromHex(userID)
 		if err != nil {
+			logrus.WithError(err).WithField("user_id", userID).Error("Invalid user ID format")
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid user ID format")
 		}
 
 		// Get existing user
 		user, err := repo.GetByID(c.Context(), objectID)
 		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "Failed to get user")
+			logrus.WithError(err).WithField("user_id", userID).Error("Failed to get user")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to retrieve user")
 		}
 		if user == nil {
 			return fiber.NewError(fiber.StatusNotFound, "User not found")
 		}
 
 		// Parse update data
-		var updateData models.User
+		var updateData struct {
+			Name        string `json:"name"`
+			Email       string `json:"email"`
+			Role        string `json:"role"`
+			IsVerified  bool   `json:"is_verified"`
+			Blocked     bool   `json:"blocked"`
+			NewPassword string `json:"new_password"`
+		}
 
 		if err := c.BodyParser(&updateData); err != nil {
+			logrus.WithError(err).Error("Failed to parse update request body")
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
 		}
 
-		// Update user fields
-		if updateData.Email != "" {
-			user.Email = updateData.Email
+		// Validate role if provided
+		if updateData.Role != "" && updateData.Role != "user" && updateData.Role != "admin" {
+			return fiber.NewError(fiber.StatusBadRequest, "Invalid role")
 		}
+
+		// Update user fields
 		if updateData.Name != "" {
 			user.Name = updateData.Name
+		}
+		if updateData.Email != "" {
+			// Check if email is already taken
+			existingUser, err := repo.GetByEmail(c.Context(), updateData.Email)
+			if err != nil {
+				logrus.WithError(err).Error("Failed to check email availability")
+				return fiber.NewError(fiber.StatusInternalServerError, "Failed to verify email")
+			}
+			if existingUser != nil && existingUser.ID != user.ID {
+				return fiber.NewError(fiber.StatusConflict, "Email already in use")
+			}
+			user.Email = updateData.Email
 		}
 		if updateData.Role != "" {
 			user.Role = updateData.Role
 		}
 		user.IsVerified = updateData.IsVerified
+		user.Blocked = updateData.Blocked
 
-		// Update user
+		// Update password if provided
+		if updateData.NewPassword != "" {
+			if err := validatePassword(updateData.NewPassword); err != nil {
+				return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			}
+			hashedPassword, err := bcrypt.GenerateFromPassword([]byte(updateData.NewPassword), bcrypt.DefaultCost)
+			if err != nil {
+				logrus.WithError(err).Error("Failed to hash new password")
+				return fiber.NewError(fiber.StatusInternalServerError, "Failed to update password")
+			}
+			user.PasswordHash = string(hashedPassword)
+		}
+
+		// Save updated user
 		if err := repo.Update(c.Context(), user); err != nil {
+			logrus.WithError(err).WithField("user_id", userID).Error("Failed to update user")
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to update user")
 		}
+
 		return c.JSON(user)
 	}
 }
 
-// HandleDeleteUser deletes a user (admin only)
+// HandleDeleteUser deletes a user
 func HandleDeleteUser(repo *repository.UserRepository) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Get user ID from params
@@ -94,15 +173,40 @@ func HandleDeleteUser(repo *repository.UserRepository) fiber.Handler {
 		// Convert string ID to ObjectID
 		objectID, err := primitive.ObjectIDFromHex(userID)
 		if err != nil {
+			logrus.WithError(err).WithField("user_id", userID).Error("Invalid user ID format")
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid user ID format")
+		}
+
+		// Get existing user
+		user, err := repo.GetByID(c.Context(), objectID)
+		if err != nil {
+			logrus.WithError(err).WithField("user_id", userID).Error("Failed to get user")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to retrieve user")
+		}
+		if user == nil {
+			return fiber.NewError(fiber.StatusNotFound, "User not found")
 		}
 
 		// Delete user
 		if err := repo.Delete(c.Context(), objectID); err != nil {
+			logrus.WithError(err).WithField("user_id", userID).Error("Failed to delete user")
 			return fiber.NewError(fiber.StatusInternalServerError, "Failed to delete user")
 		}
 
 		return c.SendStatus(fiber.StatusNoContent)
+	}
+}
+
+// HandleGetUserStats gets user statistics
+func HandleGetUserStats(repo *repository.UserRepository) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		stats, err := repo.GetUserStats(c.Context())
+		if err != nil {
+			logrus.WithError(err).Error("Failed to get user statistics")
+			return fiber.NewError(fiber.StatusInternalServerError, "Failed to retrieve user statistics")
+		}
+
+		return c.JSON(stats)
 	}
 }
 
