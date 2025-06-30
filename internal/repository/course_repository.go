@@ -56,7 +56,7 @@ func (r *CourseRepository) GetByID(ctx context.Context, id primitive.ObjectID) (
 }
 
 // List returns a list of courses with pagination
-func (r *CourseRepository) List(ctx context.Context, page, limit int64) ([]*models.Course, int64, error) {
+func (r *CourseRepository) List(ctx context.Context, page, limit int64, public bool) ([]*models.Course, int64, error) {
 	skip := (page - 1) * limit
 
 	// Get total count
@@ -71,7 +71,12 @@ func (r *CourseRepository) List(ctx context.Context, page, limit int64) ([]*mode
 		SetLimit(limit).
 		SetSort(bson.M{"created_at": -1})
 
-	cursor, err := r.collection.Find(ctx, bson.M{}, opts)
+	filter := bson.M{}
+	if public {
+		filter = bson.M{"is_public": true}
+	}
+
+	cursor, err := r.collection.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -97,6 +102,7 @@ func (r *CourseRepository) Update(ctx context.Context, course *models.Course) er
 			"thumbnail_url": course.ThumbnailURL,
 			"video_order":   course.VideoOrder,
 			"is_paid":       course.IsPaid,
+			"is_public":     course.IsPublic,
 			"skills":        course.Skills,
 			"author":        course.Author,
 			"updated_at":    course.UpdatedAt,

@@ -4,7 +4,6 @@ import (
 	"cource-api/internal/repository"
 
 	"github.com/gofiber/fiber/v2"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var userRepo *repository.UserRepository
@@ -44,26 +43,18 @@ func HandleUpdateCurrentUser(repo *repository.UserRepository) fiber.Handler {
 		}
 
 		var updateData struct {
-			Email    string `json:"email"`
-			Password string `json:"password,omitempty"`
+			Name string `json:"name"`
 		}
 
 		if err := c.BodyParser(&updateData); err != nil {
 			return fiber.NewError(fiber.StatusBadRequest, "Invalid request body")
 		}
 
-		// Update user fields
-		if updateData.Email != "" {
-			user.Email = updateData.Email
+		if updateData.Name == "" || len(updateData.Name) > 50 {
+			return fiber.NewError(fiber.StatusForbidden, "Invalid input")
 		}
 
-		if updateData.Password != "" {
-			hashedPassword, err := bcrypt.GenerateFromPassword([]byte(updateData.Password), bcrypt.DefaultCost)
-			if err != nil {
-				return fiber.NewError(fiber.StatusInternalServerError, "Failed to hash password")
-			}
-			user.PasswordHash = string(hashedPassword)
-		}
+		user.Name = updateData.Name
 
 		// Update in database
 		if err := repo.Update(c.Context(), user); err != nil {

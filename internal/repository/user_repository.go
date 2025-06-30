@@ -74,6 +74,7 @@ func (r *UserRepository) Update(ctx context.Context, user *models.User) error {
 
 	update := bson.M{
 		"$set": bson.M{
+			"name":         user.Name,
 			"email":        user.Email,
 			"role":         user.Role,
 			"is_verified":  user.IsVerified,

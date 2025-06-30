@@ -43,6 +43,7 @@ func (s *FiberServer) RegisterRoutes() {
 	videos := protected.Group("/videos")
 	videos.Get("/", handlers.HandleListVideos(s.VideoRepo))
 	videos.Post("/", middleware.RequireRole("admin"), handlers.HandleCreateVideo(s.VideoRepo, s.CourseRepo))
+	videos.Post("/reorder/:id", middleware.RequireRole("admin"), handlers.HandleReorderVideos(s.CourseRepo))
 	videos.Get("/:id", handlers.HandleGetVideo(s.VideoRepo))
 	videos.Put("/:id", middleware.RequireRole("admin"), handlers.HandleUpdateVideo(s.VideoRepo, s.CourseRepo))
 	videos.Delete("/:id", middleware.RequireRole("admin"), handlers.HandleDeleteVideo(s.VideoRepo, s.CourseRepo))
@@ -84,5 +85,7 @@ func (s *FiberServer) RegisterRoutes() {
 	admin.Get("/users/stats", handlers.HandleGetUserStats(s.UserRepo))
 	admin.Put("/users/:id", handlers.HandleUpdateUser(s.UserRepo))
 	admin.Delete("/users/:id", handlers.HandleDeleteUser(s.UserRepo))
+	admin.Get("/courses", handlers.HandleAdminListCourses(s.CourseRepo))
+
 	admin.Put("/pricing/:region", handlers.HandleUpdateRegionalPricing(s.PaymentRepo))
 }
